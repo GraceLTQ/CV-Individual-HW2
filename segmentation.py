@@ -1,40 +1,57 @@
 import numpy as np
-from scipy.sparse import lil_matrix
-from scipy.linalg import eigh  # For dense matrix eigendecomposition
+from scipy.sparse import lil_matrix, csr_matrix
+from scipy.sparse.linalg import eigsh
+from scipy.sparse import diags
 
 
-def graph_based_segmentation(img, use_dense_solver=False):
-    h, w, _ = img.shape
-    A = lil_matrix((h * w, h * w))
+def graph_based_segmentation(img):
+    h, w, _ = img.shape  # Height and width of the image
+    N = h * w            # Total number of pixels
 
-    def index(i, j):
-        return i * w + j
+    # Initialize a LIL matrix since it's efficient for constructing sparse matrices
+    W = np.zeros((N, N), dtype=np.float32)
+    Nom = np.zeros((N, N), dtype=np.float32)
+    Denom = np.zeros((N, N), dtype=np.float32)
 
+    # Iterate through all pairs of pixels within the defined neighborhood
     for i in range(h):
         for j in range(w):
-            for di in range(-20, 21):
-                for dj in range(-20, 21):
-                    ni, nj = i + di, j + dj
-                    if 0 <= ni < h and 0 <= nj < w and (di != 0 or dj != 0):
-                        if abs(di) <= 20 and abs(dj) <= 20:
-                            color_diff = np.linalg.norm(
-                                img[i, j] - img[ni, nj])
-                            weight = np.exp(-100 * color_diff ** 2)
-                            A[index(i, j), index(ni, nj)] = weight
-                            A[index(ni, nj), index(i, j)] = weight
+            for k in range(max(0, i-20), min(h, i+21)):
+                for l in range(max(0, j-20), min(w, j+21)):
+                    # Calculate the nomicator
+                    # Convert the 2D coordinates to a single index for a 1D vector
+                    p = i * w + j
+                    q = k * w + l
 
-    A = A.tocsr()
-    # Regularization
-    A += lil_matrix(np.eye(A.shape[0]) * 0.01)
+                    # If p and q are the same pixel, continue to the next iteration
+                    if p == q:
+                        continue
 
-    if use_dense_solver:
-        # Convert to a dense matrix and use a dense solver
-        A_dense = A.toarray()
-        eigenvalues, eigenvectors = eigh(A_dense)
-        segmentation = eigenvectors[:, 1].reshape(h, w)
-    else:
-        from scipy.sparse.linalg import eigsh
-        eigenvalues, eigenvectors = eigsh(A, k=2, which='SM', maxiter=5000)
-        segmentation = eigenvectors[:, 1].reshape(h, w)
+                    # Calculate the weight based on the color distance
+                    if abs(i-k) <= 20 and abs(j-l) <= 20:
+                        color_distance = np.linalg.norm(img[i, j] - img[k, l])
+                        Nom[p, q] = np.exp(-100 * color_distance ** 2)
 
-    return segmentation
+                    # Calculate the denominator
+                    Denom[p, q] = np.sum(Nom[p, :])
+
+                    # Calculate the weight
+                    W[p, q] = Nom[p, q] / Denom[p, q]
+
+    # Construct the degree matrix D
+    I = np.identity(N)
+
+    # Construct the A matrix
+    A = I - W
+
+    # Compute the eigenvalues and eigenvectors of the A matrix
+    eigenvalues, eigenvectors = eigsh(A, k=2, which='SM')
+
+    # The second eigenvector is the eigenvector associated with the second smallest eigenvalue
+    second_eigenvector = eigenvectors[:, 1]
+
+    return second_eigenvector
+
+# Example usage:
+# img = np.array(Image.open('path_to_image.jpg'), dtype=np.float32) / 255.
+# segmentation_result = graph_based_segmentation(img)
